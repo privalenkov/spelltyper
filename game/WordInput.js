@@ -1,25 +1,25 @@
 import { Container, Text, Ticker } from 'pixi.js';
 
 export class WordInput {
-    constructor(renderer, objectManager) {
+    constructor(renderer, objectManager, webSocket) {
         this.renderer = renderer;
         this.objectManager = objectManager;
         this.word = '';
         this.letters = [];
+        this.webSocket = webSocket;
         this.letterContainer = new Container();
         this.renderer.stage.addChild(this.letterContainer);
-
-        this.validWords = new Set(["яблоко", "вода", "огонь", "какоетосреднееслово","допустимсамоедлинноеслововмире"]);
         this.inactivityTimeout = null;
         this.maxWordLength = 35;
         this.maxLetterSpacing = 80;
         this.minLetterSpacing = 35;
+        this.isAnimatingLetters = false;
         this.letterSpacingMap = { // Дополнительные отступы для широких букв
-            'м': 1.2, 'ш': 1.3, 'щ': 1.4, 'ж': 1.3, 'ф': 1.3, 'ё': 1.1, 'г': .7, 'ы': 1.2,
+            'м': 1.2, 'ш': 1.3, 'щ': 1.4, 'ж': 1.3, 'ф': 1.3, 'ё': 1.1, 'г': .7, 'ы': 1.2, 'ю': 1.2
         };
         this.baseRadiusY = 100;
         this.baseArcAngle = Math.PI / 3;
-        this.isAnimating = false; // Флаг блокировки ввода
+        this.isBlockedInput = false; // Флаг блокировки ввода
 
         window.addEventListener("keydown", (e) => this.handleInput(e));
 
@@ -28,20 +28,35 @@ export class WordInput {
         this.ticker.start();
     }
 
+    clearWord() {
+        this.word = '';
+        this.letterContainer.removeChildren();
+        this.letters = [];
+    }
+
+    setIsBlockedInput(state) {
+        this.isBlockedInput = state; // 🔥 Включает / выключает блокировку
+    }
+
+    isAnimating() {
+        return this.isAnimatingLetters; // ✅ Возвращает true, если идёт анимация букв
+    }
+
     handleInput(event) {
-        if (this.isAnimating) return; // Блокируем ввод во время анимации
+        if (this.isBlockedInput) return; // Блокируем ввод во время анимации
 
         clearTimeout(this.inactivityTimeout);
 
         if (event.key === "Enter") {
-            this.processWord();
+            // this.processWord();
+            this.webSocket.checkWord(this.word);
         } else if (event.key === "Backspace") {
             this.removeLetter();
         } else if (/^[а-яА-Я]$/.test(event.key)) {
             this.addLetter(event.key);
         }
 
-        this.inactivityTimeout = setTimeout(() => this.processWord(), 1200);
+        this.inactivityTimeout = setTimeout(() => this.webSocket.checkWord(this.word), 1200);
     }
 
     addLetter(letter) {
@@ -58,25 +73,19 @@ export class WordInput {
         }
     }
 
-    processWord() {
-        if (this.word.length === 0) return;
+    handleWordResponse(data) {
+        this.isBlockedInput = true; // Блокируем ввод на время анимации
+        this.isAnimatingLetters = true;
 
-        if (this.validWords.has(this.word)) {
-            this.isAnimating = true; // Блокируем ввод на время анимации
+        if (data.exists) {
             this.ticker.stop(); // Останавливаем дрожание
-            this.animateMerge(); // Анимация слияния букв
+            this.animateMerge(data); // Анимация слияния букв
         } else {
             this.scatterLettersSequentially();
         }
     }
 
-    clearWord() {
-        this.word = '';
-        this.letterContainer.removeChildren();
-        this.letters = [];
-    }
-
-    animateMerge() {
+    animateMerge(data) {
         const centerX = this.renderer.app.screen.width / 2;
         const avgY = this.letters.reduce((sum, letter) => sum + letter.y, 0) / this.letters.length;
         const centerY = avgY; // ✅ Теперь центр точно соответствует среднему уровню букв
@@ -94,7 +103,7 @@ export class WordInput {
                 this.mergeLetter(letter, centerX, centerY, () => {
                     mergedLetters++;
                     if (mergedLetters === this.letters.length) {
-                        this.finalizeMerge();
+                        this.finalizeMerge(data);
                     }
                 });
             }, delay);
@@ -119,15 +128,15 @@ export class WordInput {
         mergeTicker.start();
     }
 
-    finalizeMerge() {
-        this.objectManager.spawnObject(this.word); // ✅ Теперь спавнит объект!
+    finalizeMerge(data) {
+        this.objectManager.spawnObject(data.wordData, null, true);
         this.clearWord();
-        this.isAnimating = false; // Разрешаем ввод снова
+        this.isBlockedInput = true;
+        this.isAnimatingLetters = false;
         this.ticker.start(); // Возобновляем анимацию дрожания
     }
 
     scatterLettersSequentially() {
-        this.isAnimating = true; // Блокируем ввод
         this.ticker.stop(); // Останавливаем дрожание перед разлетом
 
         let delay = 0;
@@ -144,7 +153,7 @@ export class WordInput {
         // ✅ Убрали +1000, теперь работает точно по времени букв
         setTimeout(() => {
             this.clearWord();
-            this.isAnimating = false; // Разрешаем ввод снова
+            this.isAnimatingLetters = false;
             this.ticker.start(); // Возобновляем анимацию дрожания для новых букв
         }, this.letters.length * scatterInterval);
     }
